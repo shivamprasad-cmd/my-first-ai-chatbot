@@ -15,6 +15,7 @@ Be polite and helpful.
 Give practical examples when useful.
 """
 
+
 def chatbot(message, history):
     contents = []
 
@@ -42,17 +43,20 @@ def chatbot(message, history):
             )
             return response.text
 
-        except errors.ServerError:
+        except errors.ServerError as e:
+            print("Gemini server error:", repr(e), flush=True)
+
             if attempt == 2:
-                return "Gemini is temporarily busy. Please try again in a minute."
+                return "Gemini is temporarily busy. Please try again later."
 
             time.sleep(2 ** attempt)
 
         except Exception as e:
-    import traceback
-    print("CHATBOT ERROR:", repr(e), flush=True)
-    traceback.print_exc()
-    return f"Error: {type(e).__name__}. Please try again."
+            import traceback
+            print("CHATBOT ERROR:", repr(e), flush=True)
+            traceback.print_exc()
+            return f"Something went wrong: {type(e).__name__}"
+
 
 demo = gr.ChatInterface(
     fn=chatbot,
