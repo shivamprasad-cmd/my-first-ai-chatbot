@@ -16,16 +16,39 @@ Give practical examples when useful.
 """
 
 
+
 def chatbot(message, history):
     contents = []
 
+    # Convert Gradio history into Gemini format
     for item in history:
         role = "user" if item["role"] == "user" else "model"
-        contents.append({
-            "role": role,
-            "parts": [{"text": item["content"]}]
-        })
+        content = item.get("content", "")
 
+        # Extract text from Gradio message blocks
+        if isinstance(content, list):
+            text_parts = []
+
+            for block in content:
+                if isinstance(block, str):
+                    text_parts.append(block)
+                elif isinstance(block, dict):
+                    text = block.get("text")
+                    if isinstance(text, str):
+                        text_parts.append(text)
+
+            content = "\n".join(text_parts)
+
+        elif isinstance(content, dict):
+            content = content.get("text", "")
+
+        if isinstance(content, str) and content.strip():
+            contents.append({
+                "role": role,
+                "parts": [{"text": content}]
+            })
+
+    # Add the latest user message
     contents.append({
         "role": "user",
         "parts": [{"text": message}]
@@ -41,6 +64,7 @@ def chatbot(message, history):
                     max_output_tokens=500
                 )
             )
+
             return response.text
 
         except errors.ServerError as e:
