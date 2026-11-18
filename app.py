@@ -14,6 +14,7 @@ Be polite and helpful.
 Give practical examples when useful.
 """
 
+
 def chatbot(message, history):
     contents = []
 
@@ -39,6 +40,7 @@ def chatbot(message, history):
     )
 
     return response.text
+
 
 demo = gr.ChatInterface(
     fn=chatbot,
