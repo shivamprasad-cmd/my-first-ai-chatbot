@@ -49,8 +49,10 @@ def chatbot(message, history):
             time.sleep(2 ** attempt)
 
         except Exception as e:
-            print("Chatbot error:", str(e))
-            return "Something went wrong. Please try again later."
+    import traceback
+    print("CHATBOT ERROR:", repr(e), flush=True)
+    traceback.print_exc()
+    return f"Error: {type(e).__name__}. Please try again."
 
 demo = gr.ChatInterface(
     fn=chatbot,
