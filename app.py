@@ -2,16 +2,15 @@
 import os
 import fitz
 import time
-import math
 import gradio as gr
 
 from google import genai
 from google.genai import types, errors
 
 
-# ----------------------------------
+# ==========================================
 # 1. GEMINI CONNECTION
-# ----------------------------------
+# ==========================================
 
 api_key = os.environ["GEMINI_API_KEY"]
 client = genai.Client(api_key=api_key)
@@ -27,15 +26,17 @@ Give practical examples when useful.
 """
 
 
-# ----------------------------------
+# ==========================================
 # 2. PDF TEXT EXTRACTION
-# ----------------------------------
+# ==========================================
 
 def extract_pdf_text(pdf_path):
 
     extracted_pages = []
+    filename = os.path.basename(pdf_path)
 
     try:
+
         pdf = fitz.open(pdf_path)
 
         for page_number, page in enumerate(pdf, start=1):
@@ -45,16 +46,14 @@ def extract_pdf_text(pdf_path):
             if page_text.strip():
 
                 extracted_pages.append({
+                    "source": filename,
                     "page": page_number,
                     "text": page_text
                 })
 
         pdf.close()
 
-        if not extracted_pages:
-            return None
-
-        return extracted_pages
+        return extracted_pages if extracted_pages else None
 
     except Exception as e:
 
@@ -62,9 +61,9 @@ def extract_pdf_text(pdf_path):
         return None
 
 
-# ----------------------------------
+# ==========================================
 # 3. TEXT CHUNKING
-# ----------------------------------
+# ==========================================
 
 def create_chunks(extracted_pages, chunk_size=500, overlap=100):
 
@@ -83,6 +82,7 @@ def create_chunks(extracted_pages, chunk_size=500, overlap=100):
             chunk_text = " ".join(words[start:end])
 
             chunks.append({
+                "source": page["source"],
                 "page": page["page"],
                 "text": chunk_text
             })
@@ -92,16 +92,13 @@ def create_chunks(extracted_pages, chunk_size=500, overlap=100):
     return chunks
 
 
-# ----------------------------------
+# ==========================================
 # 4. GEMINI EMBEDDINGS
-# ----------------------------------
-
+# ==========================================
 
 def generate_embeddings(texts, task_type):
 
     all_embeddings = []
-
-    # Smaller batches to control API usage
     batch_size = 6
 
     for start in range(0, len(texts), batch_size):
@@ -146,7 +143,6 @@ def generate_embeddings(texts, task_type):
                 else:
                     raise
 
-        # Allow the rate-limit window to recover
         if start + batch_size < len(texts):
 
             print(
@@ -160,51 +156,53 @@ def generate_embeddings(texts, task_type):
     return all_embeddings
 
 
+# ==========================================
+# 5. PROCESS MULTIPLE PDF FILES
+# ==========================================
 
-# ----------------------------------
-# 5. PROCESS UPLOADED PDF
-# ----------------------------------
+def process_pdfs(pdf_paths):
 
-def process_pdf(pdf_path):
+    if not pdf_paths:
+        return None, "No PDF files were uploaded."
 
-    if not pdf_path:
-
-        return None, "Please upload a PDF first."
-
-    if not str(pdf_path).lower().endswith(".pdf"):
-
-        return None, "Please upload a valid PDF file."
+    all_pages = []
 
     try:
 
-        extracted_pages = extract_pdf_text(pdf_path)
+        for pdf_path in pdf_paths:
 
-        if not extracted_pages:
+            if not pdf_path.lower().endswith(".pdf"):
+                continue
+
+            extracted_pages = extract_pdf_text(pdf_path)
+
+            if extracted_pages:
+                all_pages.extend(extracted_pages)
+
+        if not all_pages:
 
             return None, (
-                "No readable text found. "
-                "This PDF may contain scanned images."
+                "No readable PDF text found. "
+                "Scanned PDFs may require OCR."
             )
 
-        chunks = create_chunks(extracted_pages)
+        chunks = create_chunks(all_pages)
 
         if not chunks:
-
             return None, "No text chunks could be created."
 
-        # Safety limit for the free hosting instance
+        # Limit for the current free hosting version
         if len(chunks) > 500:
 
             return None, (
-                "This PDF is too large for the current version. "
-                "Please upload a smaller PDF."
+                "These PDFs contain too much text. "
+                "Please upload fewer or smaller PDFs."
             )
 
         chunk_texts = [
             chunk["text"] for chunk in chunks
         ]
 
-        # Generate document embeddings
         embeddings = generate_embeddings(
             chunk_texts,
             "RETRIEVAL_DOCUMENT"
@@ -215,28 +213,31 @@ def process_pdf(pdf_path):
             "embeddings": embeddings
         }
 
-        message = (
-            f"PDF processed successfully! "
-            f"{len(extracted_pages)} pages and "
-            f"{len(chunks)} text chunks are ready. "
-            f"You can now ask questions about your PDF."
+        filenames = list(dict.fromkeys(
+            page["source"] for page in all_pages
+        ))
+
+        status = (
+            f"Successfully processed {len(filenames)} PDF(s), "
+            f"{len(all_pages)} readable pages and "
+            f"{len(chunks)} chunks.\n\n"
+            f"Documents: {', '.join(filenames)}"
         )
 
-        return rag_data, message
+        return rag_data, status
 
     except Exception as e:
 
         print("PDF processing error:", repr(e), flush=True)
 
         return None, (
-            "PDF processing failed. Please check the Render logs "
-            "for details and try again."
+            "PDF processing failed. Please try again later."
         )
 
 
-# ----------------------------------
+# ==========================================
 # 6. COSINE SIMILARITY RETRIEVAL
-# ----------------------------------
+# ==========================================
 
 def retrieve_chunks(question, rag_data):
 
@@ -257,8 +258,6 @@ def retrieve_chunks(question, rag_data):
         rag_data["embeddings"]
     ):
 
-        # Gemini embeddings are normalized.
-        # Their dot product gives cosine similarity.
         similarity = sum(
             a * b
             for a, b in zip(
@@ -267,9 +266,7 @@ def retrieve_chunks(question, rag_data):
             )
         )
 
-        scored_chunks.append(
-            (similarity, index)
-        )
+        scored_chunks.append((similarity, index))
 
     scored_chunks.sort(
         key=lambda item: item[0],
@@ -284,6 +281,7 @@ def retrieve_chunks(question, rag_data):
 
         retrieved.append({
             "score": score,
+            "source": rag_data["chunks"][index]["source"],
             "page": rag_data["chunks"][index]["page"],
             "text": rag_data["chunks"][index]["text"]
         })
@@ -291,9 +289,9 @@ def retrieve_chunks(question, rag_data):
     return retrieved
 
 
-# ----------------------------------
-# 7. NORMAL CHAT HISTORY
-# ----------------------------------
+# ==========================================
+# 7. CONVERT CHAT HISTORY
+# ==========================================
 
 def convert_history(history):
 
@@ -324,7 +322,6 @@ def convert_history(history):
                     text = block.get("text")
 
                     if isinstance(text, str):
-
                         text_parts.append(text)
 
             content = "\n".join(text_parts)
@@ -341,23 +338,27 @@ def convert_history(history):
             })
 
     return contents
-    
+
+
+# ==========================================
+# 8. INTELLIGENT CHAT ROUTING
+# ==========================================
+
 def is_pdf_question(message, history):
 
     text = message.lower().strip()
 
-    # Greetings and acknowledgements should always use normal chat
     small_talk = {
         "hi", "hello", "hey", "hii", "hiii",
-        "ok", "okay", "okkk", "thanks", "thank you",
-        "thankyou", "cool", "great", "nice",
-        "bye", "good morning", "good evening"
+        "ok", "okay", "okkk", "thanks",
+        "thank you", "thankyou", "cool",
+        "great", "nice", "bye",
+        "good morning", "good evening"
     }
 
     if text in small_talk:
         return False
 
-    # Explicit references to uploaded documents
     pdf_keywords = [
         "pdf", "document", "uploaded file",
         "uploaded document", "this file",
@@ -366,15 +367,14 @@ def is_pdf_question(message, history):
         "from the document", "in the document",
         "in this document", "in that pdf",
         "in this pdf", "from this pdf",
-        "page ", "chapter ", "summarize this",
-        "summarize the", "what is it about",
-        "what does the document", "what does this pdf"
+        "page ", "chapter ", "summarize",
+        "what is it about", "what does the document",
+        "what does this pdf"
     ]
 
     if any(keyword in text for keyword in pdf_keywords):
         return True
 
-    # Recognize short follow-up questions about the PDF
     followups = [
         "tell me more", "explain more",
         "more details", "elaborate",
@@ -402,31 +402,106 @@ def is_pdf_question(message, history):
             ):
                 return True
 
-    # Default to normal AI conversation
     return False
 
 
+# ==========================================
+# 9. EXTRACT UPLOADED FILE PATHS
+# ==========================================
 
-# ----------------------------------
-# 8. MAIN CHATBOT FUNCTION
-# ----------------------------------
+def get_uploaded_paths(files):
 
+    paths = []
+
+    for file_item in files or []:
+
+        if isinstance(file_item, str):
+
+            path = file_item
+
+        elif isinstance(file_item, dict):
+
+            path = (
+                file_item.get("path")
+                or file_item.get("name")
+            )
+
+        else:
+
+            path = getattr(file_item, "path", None)
+
+        if path and str(path).lower().endswith(".pdf"):
+            paths.append(str(path))
+
+    return paths
+
+
+# ==========================================
+# 10. MAIN MULTIMODAL CHATBOT
+# ==========================================
 
 def chatbot(message, history, rag_data):
 
-    if not message or not message.strip():
-        return "Please enter a question."
+    # MultimodalTextbox supplies a dictionary
+    if isinstance(message, dict):
+
+        user_text = (message.get("text") or "").strip()
+
+        uploaded_files = get_uploaded_paths(
+            message.get("files", [])
+        )
+
+    else:
+
+        user_text = str(message or "").strip()
+        uploaded_files = []
+
+    updated_rag_data = rag_data
 
     try:
 
-        # Decide which chatbot mode to use
+        # Process newly attached PDFs
+        if uploaded_files:
+
+            new_rag_data, status = process_pdfs(uploaded_files)
+
+            if new_rag_data is None:
+
+                return status, rag_data
+
+            updated_rag_data = new_rag_data
+
+            print(status, flush=True)
+
+            # If the user only uploads a PDF
+            # without asking a question
+            if not user_text:
+
+                return status, updated_rag_data
+
+        # Empty message and no attachment
+        if not user_text:
+
+            return (
+                "Please enter a message or attach a PDF.",
+                updated_rag_data
+            )
+
+        # Decide whether this is a PDF question
         use_pdf = (
-            rag_data is not None
-            and is_pdf_question(message, history)
+            updated_rag_data is not None
+            and (
+                bool(uploaded_files)
+                and user_text.lower() not in {
+                    "hi", "hello", "hey", "ok",
+                    "okay", "thanks", "thank you"
+                }
+                or is_pdf_question(user_text, history)
+            )
         )
 
         # ----------------------------------
-        # MODE 1: NORMAL AI CHAT
+        # NORMAL AI CHAT
         # ----------------------------------
 
         if not use_pdf:
@@ -435,7 +510,7 @@ def chatbot(message, history, rag_data):
 
             contents.append({
                 "role": "user",
-                "parts": [{"text": message}]
+                "parts": [{"text": user_text}]
             })
 
             for attempt in range(3):
@@ -451,30 +526,36 @@ def chatbot(message, history, rag_data):
                         )
                     )
 
-                    return response.text
+                    return response.text, updated_rag_data
 
                 except errors.ServerError:
 
                     if attempt == 2:
+
                         return (
                             "Gemini is temporarily busy. "
-                            "Please try again."
+                            "Please try again.",
+                            updated_rag_data
                         )
 
                     time.sleep(2 ** attempt)
 
         # ----------------------------------
-        # MODE 2: PDF QUESTION ANSWERING
+        # PDF QUESTION ANSWERING
         # ----------------------------------
 
-        retrieved = retrieve_chunks(message, rag_data)
+        retrieved = retrieve_chunks(
+            user_text,
+            updated_rag_data
+        )
 
         context = ""
 
         for item in retrieved:
 
             context += (
-                f"\n[PDF Page {item['page']}]\n"
+                f"\n[Document: {item['source']} | "
+                f"Page: {item['page']}]\n"
                 f"{item['text']}\n"
             )
 
@@ -487,14 +568,14 @@ Rules:
 1. Do not use outside knowledge.
 2. If the answer is not available, say:
    "I don't know based on the uploaded document."
-3. Include relevant PDF page numbers.
+3. Include the document filename and relevant page numbers.
 4. Never invent facts or page numbers.
 
 PDF CONTEXT:
 {context}
 
 USER QUESTION:
-{message}
+{user_text}
 """
 
         response = client.models.generate_content(
@@ -506,70 +587,56 @@ USER QUESTION:
             )
         )
 
-        return response.text
+        return response.text, updated_rag_data
 
     except Exception as e:
 
         print("CHATBOT ERROR:", repr(e), flush=True)
 
         return (
-            "Something went wrong while processing your request. "
-            "Please try again."
+            "Something went wrong. Please try again.",
+            updated_rag_data
         )
 
 
-# ----------------------------------
-# 9. GRADIO USER INTERFACE
-# ----------------------------------
+# ==========================================
+# 11. GRADIO CHAT INTERFACE
+# ==========================================
 
 with gr.Blocks() as demo:
 
     gr.Markdown("# My AI Chatbot")
 
     gr.Markdown(
-        "Chat normally or upload a PDF to ask questions "
-        "about its contents."
+        "Ask anything or attach one or more PDFs "
+        "using the + button."
     )
 
+    # Per-browser-session document storage
     rag_state = gr.State(value=None)
-
-    with gr.Row():
-
-        pdf_input = gr.File(
-            label="Upload your PDF",
-            file_types=[".pdf"],
-            type="filepath"
-        )
-
-        process_button = gr.Button(
-            "Process PDF",
-            variant="primary"
-        )
-
-    pdf_status = gr.Markdown(
-        "No PDF uploaded yet."
-    )
-
-    process_button.click(
-        fn=process_pdf,
-        inputs=[pdf_input],
-        outputs=[rag_state, pdf_status]
-    )
 
     gr.ChatInterface(
         fn=chatbot,
+        multimodal=True,
+        textbox=gr.MultimodalTextbox(
+            file_types=[".pdf"],
+            file_count="multiple",
+            sources=["upload"],
+            placeholder="Message your AI assistant..."
+        ),
         additional_inputs=[rag_state],
+        additional_outputs=[rag_state],
         title="Chat with your AI assistant",
         description=(
-            "Ask general questions or ask questions "
-            "about your processed PDF."
+            "Chat normally or upload PDFs using the + button "
+            "to ask questions about your documents."
         )
     )
 
 
-# ----------------------------------
-# 10. START APPLICATION
-# ----------------------------------
+# ==========================================
+# 12. START APPLICATION
+# ==========================================
 
 demo.launch(
     server_name="0.0.0.0",
