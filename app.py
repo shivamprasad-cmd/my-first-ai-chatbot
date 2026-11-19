@@ -341,22 +341,95 @@ def convert_history(history):
             })
 
     return contents
+    
+def is_pdf_question(message, history):
+
+    text = message.lower().strip()
+
+    # Greetings and acknowledgements should always use normal chat
+    small_talk = {
+        "hi", "hello", "hey", "hii", "hiii",
+        "ok", "okay", "okkk", "thanks", "thank you",
+        "thankyou", "cool", "great", "nice",
+        "bye", "good morning", "good evening"
+    }
+
+    if text in small_talk:
+        return False
+
+    # Explicit references to uploaded documents
+    pdf_keywords = [
+        "pdf", "document", "uploaded file",
+        "uploaded document", "this file",
+        "the file", "this book", "this report",
+        "according to", "based on the document",
+        "from the document", "in the document",
+        "in this document", "in that pdf",
+        "in this pdf", "from this pdf",
+        "page ", "chapter ", "summarize this",
+        "summarize the", "what is it about",
+        "what does the document", "what does this pdf"
+    ]
+
+    if any(keyword in text for keyword in pdf_keywords):
+        return True
+
+    # Recognize short follow-up questions about the PDF
+    followups = [
+        "tell me more", "explain more",
+        "more details", "elaborate",
+        "explain that", "what about that",
+        "what about it", "can you explain",
+        "summarize it", "continue",
+        "give me more information"
+    ]
+
+    if any(phrase in text for phrase in followups):
+
+        recent_history = convert_history(history)[-6:]
+
+        for item in recent_history:
+
+            previous_message = (
+                item["parts"][0]["text"].lower()
+                if item.get("parts")
+                else ""
+            )
+
+            if item["role"] == "user" and any(
+                keyword in previous_message
+                for keyword in pdf_keywords
+            ):
+                return True
+
+    # Default to normal AI conversation
+    return False
+
 
 
 # ----------------------------------
 # 8. MAIN CHATBOT FUNCTION
 # ----------------------------------
 
+
 def chatbot(message, history, rag_data):
 
     if not message or not message.strip():
-
         return "Please enter a question."
 
     try:
 
-        # MODE 1: NORMAL CHAT
-        if not rag_data:
+        # Decide which chatbot mode to use
+        use_pdf = (
+            rag_data is not None
+            and is_pdf_question(message, history)
+        )
+
+        # ----------------------------------
+        # MODE 1: NORMAL AI CHAT
+        # ----------------------------------
+
+        if not use_pdf:
 
             contents = convert_history(history)
 
@@ -390,7 +463,9 @@ def chatbot(message, history, rag_data):
 
                     time.sleep(2 ** attempt)
 
+        # ----------------------------------
         # MODE 2: PDF QUESTION ANSWERING
+        # ----------------------------------
 
         retrieved = retrieve_chunks(message, rag_data)
 
@@ -406,15 +481,14 @@ def chatbot(message, history, rag_data):
         rag_prompt = f"""
 You are a PDF document assistant.
 
-Answer the user's question using ONLY the
-provided PDF context.
+Answer using ONLY the provided PDF context.
 
 Rules:
 1. Do not use outside knowledge.
-2. If the answer is not available in the context,
-   say: "I don't know based on the uploaded document."
-3. Cite the page numbers supporting your answer.
-4. Do not invent page numbers or facts.
+2. If the answer is not available, say:
+   "I don't know based on the uploaded document."
+3. Include relevant PDF page numbers.
+4. Never invent facts or page numbers.
 
 PDF CONTEXT:
 {context}
