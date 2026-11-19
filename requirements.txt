@@ -1,6 +1,4 @@
 
 gradio
 google-genai
-sentence-transformers
-scikit-learn
 pymupdf
