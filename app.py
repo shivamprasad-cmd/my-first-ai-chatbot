@@ -96,29 +96,69 @@ def create_chunks(extracted_pages, chunk_size=500, overlap=100):
 # 4. GEMINI EMBEDDINGS
 # ----------------------------------
 
+
 def generate_embeddings(texts, task_type):
 
     all_embeddings = []
 
-    # Process in smaller batches
-    for start in range(0, len(texts), 32):
+    # Smaller batches to control API usage
+    batch_size = 6
 
-        batch = texts[start:start + 32]
+    for start in range(0, len(texts), batch_size):
 
-        result = client.models.embed_content(
-            model=EMBED_MODEL,
-            contents=batch,
-            config=types.EmbedContentConfig(
-                task_type=task_type,
-                output_dimensionality=768
+        batch = texts[start:start + batch_size]
+
+        for attempt in range(3):
+
+            try:
+
+                result = client.models.embed_content(
+                    model=EMBED_MODEL,
+                    contents=batch,
+                    config=types.EmbedContentConfig(
+                        task_type=task_type,
+                        output_dimensionality=768
+                    )
+                )
+
+                for embedding in result.embeddings:
+                    all_embeddings.append(embedding.values)
+
+                break
+
+            except errors.ClientError as e:
+
+                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+
+                    if attempt == 2:
+                        raise
+
+                    wait_time = 60 * (attempt + 1)
+
+                    print(
+                        f"Embedding quota reached. "
+                        f"Retrying in {wait_time} seconds...",
+                        flush=True
+                    )
+
+                    time.sleep(wait_time)
+
+                else:
+                    raise
+
+        # Allow the rate-limit window to recover
+        if start + batch_size < len(texts):
+
+            print(
+                f"Processed {len(all_embeddings)} "
+                f"of {len(texts)} chunks",
+                flush=True
             )
-        )
 
-        for embedding in result.embeddings:
-
-            all_embeddings.append(embedding.values)
+            time.sleep(10)
 
     return all_embeddings
+
 
 
 # ----------------------------------
