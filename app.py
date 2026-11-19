@@ -1,4 +1,5 @@
 import os
+import fitz
 import time
 import gradio as gr
 from google import genai
@@ -15,6 +16,36 @@ Be polite and helpful.
 Give practical examples when useful.
 """
 
+
+def extract_pdf_text(pdf_path):
+    """
+    Extract text from an uploaded PDF page by page.
+    """
+
+    extracted_pages = []
+
+    try:
+        pdf = fitz.open(pdf_path)
+
+        for page_number, page in enumerate(pdf, start=1):
+            page_text = page.get_text("text")
+
+            if page_text.strip():
+                extracted_pages.append({
+                    "page": page_number,
+                    "text": page_text
+                })
+
+        pdf.close()
+
+        if not extracted_pages:
+            return None
+
+        return extracted_pages
+
+    except Exception as e:
+        print("PDF extraction error:", repr(e))
+        return None
 
 
 def chatbot(message, history):
