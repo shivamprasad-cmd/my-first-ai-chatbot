@@ -1,8 +1,11 @@
-
+from dotenv import load_dotenv
 import os
 import fitz
 import time
 import gradio as gr
+import json
+import urllib.parse
+import urllib.request
 
 from google import genai
 from google.genai import types, errors
@@ -11,7 +14,7 @@ from google.genai import types, errors
 # ==========================================
 # 1. GEMINI CONNECTION
 # ==========================================
-
+load_dotenv()
 api_key = os.environ["GEMINI_API_KEY"]
 client = genai.Client(api_key=api_key)
 
@@ -24,6 +27,164 @@ Answer questions in simple English.
 Be polite and helpful.
 Give practical examples when useful.
 """
+
+
+# ==========================================
+# 2. WIKIMEDIA IMAGE SEARCH
+# ==========================================
+
+def search_images(query):
+
+    url = "https://commons.wikimedia.org/w/api.php"
+
+    params = {
+        "action": "query",
+        "generator": "search",
+        "gsrsearch": query,
+        "gsrnamespace": 6,
+        "gsrlimit": 6,
+        "prop": "imageinfo",
+        "iiprop": "url|extmetadata",
+        "iiurlwidth": 500,
+        "format": "json"
+    }
+
+    try:
+
+        encoded_params = urllib.parse.urlencode(params)
+
+        request = urllib.request.Request(
+            f"{url}?{encoded_params}",
+            headers={
+                "User-Agent": "MyFirstAIChatbot/1.0"
+            }
+        )
+
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        pages = data.get("query", {}).get("pages", {})
+
+        results = []
+
+        for page in pages.values():
+
+            image_info = page.get("imageinfo", [])
+
+            if not image_info:
+                continue
+
+            info = image_info[0]
+            metadata = info.get("extmetadata", {})
+
+            results.append({
+                "title": page.get("title", "Untitled"),
+                "image_url": info.get("thumburl", info.get("url")),
+                "source_url": info.get("descriptionurl", ""),
+                "license": metadata.get(
+                    "LicenseShortName", {}
+                ).get("value", "License not specified"),
+                "artist": metadata.get(
+                    "Artist", {}
+                ).get("value", "Unknown author")
+            })
+
+        return results
+
+    except Exception as e:
+
+        print("Image search error:", e)
+        return []
+    
+# ==========================================
+# IMAGE SEARCH REQUEST DETECTION
+# ==========================================
+
+def is_image_search_request(message):
+
+    keywords = [
+        "show me images",
+        "show images",
+        "show me pictures",
+        "show pictures",
+        "show me photos",
+        "show photos",
+        "find images",
+        "find pictures",
+        "find photos",
+        "search images",
+        "search for images",
+        "search pictures",
+        "display images",
+        "display pictures",
+        "get images",
+        "get photos"
+    ]
+
+    message = message.lower().strip()
+
+    return any(keyword in message for keyword in keywords)
+
+# ==========================================
+# EXTRACT IMAGE SEARCH QUERY
+# ==========================================
+
+def extract_image_query(message):
+
+    prefixes = [
+        "show me images of",
+        "show images of",
+        "show me pictures of",
+        "show pictures of",
+        "show me photos of",
+        "show photos of",
+        "find images of",
+        "find pictures of",
+        "find photos of",
+        "search images for",
+        "search for images of",
+        "search pictures of",
+        "display images of",
+        "display pictures of",
+        "get images of",
+        "get photos of"
+    ]
+
+    message = message.strip()
+
+    for prefix in prefixes:
+
+        if message.lower().startswith(prefix):
+            return message[len(prefix):].strip()
+
+    return message
+
+
+# ==========================================
+# FORMAT IMAGE SEARCH RESULTS
+# ==========================================
+
+def format_image_results(results, query):
+
+    if not results:
+        return f"Sorry, I couldn't find images for **{query}**."
+
+    answer = f"## Images found for: {query}\n\n"
+
+    for index, image in enumerate(results, start=1):
+
+        answer += f"### {index}. {image['title']}\n\n"
+
+        answer += f"![{image['title']}]({image['image_url']})\n\n"
+
+        answer += (
+            f"**Author:** {image['artist']}\n\n"
+            f"**License:** {image['license']}\n\n"
+            f"[View original image and licence]({image['source_url']})\n\n"
+            "---\n\n"
+        )
+
+    return answer
 
 
 # ==========================================
@@ -486,6 +647,32 @@ def chatbot(message, history, rag_data):
                 "Please enter a message or attach a PDF.",
                 updated_rag_data
             )
+        
+        # ----------------------------------
+        # IMAGE SEARCH
+        # ----------------------------------
+
+        if is_image_search_request(user_text):
+
+            image_query = extract_image_query(user_text)
+
+            if not image_query:
+
+                return (
+                    "Please specify what images you want to search for.",
+                    updated_rag_data
+                )
+
+            results = search_images(image_query)
+
+            answer = format_image_results(
+                results,
+                image_query
+            )
+
+            return answer, updated_rag_data
+
+        
 
         # Decide whether this is a PDF question
         use_pdf = (
@@ -598,6 +785,7 @@ USER QUESTION:
             updated_rag_data
         )
 
+        
 
 # ==========================================
 # 11. GRADIO CHAT INTERFACE
