@@ -449,6 +449,202 @@ def retrieve_chunks(question, rag_data):
 
     return retrieved
 
+def search_notes(query, rag_data):
+
+    if not rag_data or not rag_data.get("embeddings"):
+        return "No PDF document is uploaded. Please upload a PDF first."
+
+    results = retrieve_chunks(query, rag_data)
+
+    if not results:
+        return "No relevant information found in the uploaded document."
+
+    answer = ""
+
+    for item in results:
+        answer += (
+            f"\nSource: {item['source']}"
+            f"\nPage: {item['page']}"
+            f"\nContent: {item['text']}\n"
+        )
+
+    return answer
+
+import ast
+import operator
+
+def calculator(expression):
+
+    allowed_operators = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.Pow: operator.pow,
+        ast.Mod: operator.mod
+    }
+
+    def calculate(node):
+
+        if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+            return node.value
+
+        if isinstance(node, ast.BinOp) and type(node.op) in allowed_operators:
+            return allowed_operators[type(node.op)](
+                calculate(node.left),
+                calculate(node.right)
+            )
+
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            value = calculate(node.operand)
+            return value if isinstance(node.op, ast.UAdd) else -value
+
+        raise ValueError("Invalid mathematical expression")
+
+    try:
+        tree = ast.parse(expression, mode="eval")
+        result = calculate(tree.body)
+        return str(result)
+
+    except Exception:
+        return "Unable to calculate. Please provide a valid mathematical expression."
+
+
+# Day 10: Gemini Tool Definitions
+
+calculator_declaration = types.FunctionDeclaration(
+    name="calculator",
+    description="Calculate mathematical expressions such as addition, subtraction, multiplication, division and percentages.",
+    parameters_json_schema={
+        "type": "object",
+        "properties": {
+            "expression": {
+                "type": "string",
+                "description": "Mathematical expression to calculate. Example: 15 * 2480 / 100"
+            }
+        },
+        "required": ["expression"]
+    }
+)
+
+
+search_notes_declaration = types.FunctionDeclaration(
+    name="search_notes",
+    description="Search the uploaded PDF document and retrieve relevant information to answer questions about it.",
+    parameters_json_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Question or topic to search for in the uploaded PDF."
+            }
+        },
+        "required": ["query"]
+    }
+)
+
+
+agent_tool = types.Tool(
+    function_declarations=[
+        calculator_declaration,
+        search_notes_declaration
+    ]
+)
+
+# Day 10: AI Agent Think-Act-Observe Loop
+
+def run_agent(user_question, rag_data):
+
+    contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_text(
+                    text=(
+                        "You are a reliable AI assistant. "
+"Use the calculator for mathematical calculations. "
+"Use search_notes for questions about the uploaded PDF. "
+"For PDF questions, answer ONLY using information returned by search_notes. "
+"Never guess, assume, or add information from outside the retrieved document. "
+"If the retrieved information does not contain the answer, say: "
+"'I don't know based on the uploaded document.' "
+"Preserve exact numbers, dates, and time periods from the document. "
+"Never invent page numbers or examples. "
+"If a tool is not needed, answer normally.\n\n"
+                        f"User question: {user_question}"
+                    )
+                )
+            ]
+        )
+    ]
+
+    # Maximum 5 agent steps
+    for step in range(5):
+
+        response = client.models.generate_content(
+            model="gemini-3.5-flash-lite",
+            contents=contents,
+            config=types.GenerateContentConfig(
+                tools=[agent_tool]
+            )
+        )
+
+        function_calls = response.function_calls
+
+        # No tool requested: return final answer
+        if not function_calls:
+            return response.text or "I could not generate an answer."
+
+        # Store Gemini's tool request
+        contents.append(response.candidates[0].content)
+
+        function_response_parts = []
+
+        # Execute requested tools
+        for function_call in function_calls:
+
+            args = function_call.args
+
+            try:
+                if function_call.name == "calculator":
+
+                    result = calculator(
+                        args["expression"]
+                    )
+
+                elif function_call.name == "search_notes":
+
+                    result = search_notes(
+                        args["query"],
+                        rag_data
+                    )
+
+                else:
+                    result = "Unknown tool requested."
+
+            except Exception as error:
+                result = f"Tool error: {str(error)}"
+
+            function_response_parts.append(
+                types.Part.from_function_response(
+                    name=function_call.name,
+                    response={"result": str(result)}
+                )
+            )
+
+        # Send tool results back to Gemini
+        contents.append(
+            types.Content(
+                role="user",
+                parts=function_response_parts
+            )
+        )
+
+    return "I reached the maximum of 5 agent steps. Please try a simpler question."
+
+
+
+
 
 # ==========================================
 # 7. CONVERT CHAT HISTORY
@@ -649,29 +845,29 @@ def chatbot(message, history, rag_data):
             )
         
         # ----------------------------------
-        # IMAGE SEARCH
+        # DAY 10: AI AGENT ROUTING
         # ----------------------------------
 
-        if is_image_search_request(user_text):
+        lower_text = user_text.lower()
 
-            image_query = extract_image_query(user_text)
+        has_math = (
+            any(char in user_text for char in ["+", "-", "*", "/", "%"])
+            and any(char.isdigit() for char in user_text)
+        ) or "percent" in lower_text or "percentage" in lower_text
 
-            if not image_query:
+        needs_pdf_search = is_pdf_question(user_text, history)
 
-                return (
-                    "Please specify what images you want to search for.",
-                    updated_rag_data
-                )
+        if has_math or needs_pdf_search:
 
-            results = search_images(image_query)
-
-            answer = format_image_results(
-                results,
-                image_query
+            agent_answer = run_agent(
+                user_text,
+                updated_rag_data
             )
 
-            return answer, updated_rag_data
+            return agent_answer, updated_rag_data
 
+        
+        
         
 
         # Decide whether this is a PDF question
@@ -826,7 +1022,10 @@ with gr.Blocks() as demo:
 # 12. START APPLICATION
 # ==========================================
 
-demo.launch(
-    server_name="0.0.0.0",
-    server_port=int(os.environ.get("PORT", 7860))
-)
+
+if __name__ == "__main__":
+
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=int(os.environ.get("PORT", 7860))
+    )
